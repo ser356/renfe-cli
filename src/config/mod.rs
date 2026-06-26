@@ -52,6 +52,13 @@ fn store_path() -> Result<PathBuf> {
     Ok(dir()?.join("profiles.json"))
 }
 
+/// Indica si ya existe `profiles.json`, es decir, si el CLI se ha
+/// configurado al menos una vez. Lo usa el wizard de primer lanzamiento para
+/// decidir si tiene que ofrecer crear el primer perfil.
+pub fn profiles_file_exists() -> Result<bool> {
+    Ok(store_path()?.exists())
+}
+
 pub fn load() -> Result<Store> {
     let p = store_path()?;
     if !p.exists() {

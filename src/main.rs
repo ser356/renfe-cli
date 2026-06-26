@@ -3,12 +3,20 @@ mod cli;
 mod commands;
 mod config;
 mod models;
+mod wizard;
 
 use clap::Parser;
 use cli::{Cli, Command};
+use colored::Colorize;
 
 fn main() {
     let cli = Cli::parse();
+
+    if let Err(e) = wizard::maybe_run(cli.json, &cli.command) {
+        eprintln!("{} {e:#}", "error:".red().bold());
+        std::process::exit(1);
+    }
+
     let result = match cli.command {
         Command::Stations(args) => commands::stations::run(args, cli.json),
         Command::Search(args) => commands::search::run(args, cli.json, cli.profile.as_deref()),
@@ -19,7 +27,7 @@ fn main() {
     };
 
     if let Err(e) = result {
-        eprintln!("error: {e:#}");
+        eprintln!("{} {e:#}", "error:".red().bold());
         std::process::exit(1);
     }
 }

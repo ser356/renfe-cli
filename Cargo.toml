@@ -19,6 +19,7 @@ anyhow = "1"
 chrono = { version = "0.4", features = ["serde", "clock"] }
 directories = "5"
 comfy-table = "7"
+colored = "2"
 
 [profile.release]
 strip = true

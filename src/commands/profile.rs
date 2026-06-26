@@ -1,7 +1,9 @@
 use crate::cli::{ProfileAction, ProfileArgs};
-use crate::commands::table;
+use crate::commands::{bad, good, table};
 use crate::config::{self, Profile};
 use anyhow::{bail, Result};
+use colored::Colorize;
+use comfy_table::{Attribute, Cell};
 
 pub fn run(args: ProfileArgs, json: bool) -> Result<()> {
     match args.action {
@@ -70,11 +72,20 @@ fn list(json: bool) -> Result<()> {
     }
     let mut t = table(&["Activo", "Nombre", "Email", "Token"]);
     for p in &store.profiles {
+        let is_active = store.active.as_deref() == Some(&p.name);
         t.add_row(vec![
-            if store.active.as_deref() == Some(&p.name) { "►".into() } else { "".into() },
-            p.name.clone(),
-            p.email.clone().unwrap_or_default(),
-            if p.token.is_some() { "sí".into() } else { "no".into() },
+            if is_active {
+                good("►").add_attribute(Attribute::Bold)
+            } else {
+                Cell::new("")
+            },
+            if is_active {
+                Cell::new(&p.name).add_attribute(Attribute::Bold)
+            } else {
+                Cell::new(&p.name)
+            },
+            Cell::new(p.email.clone().unwrap_or_default()),
+            if p.token.is_some() { good("sí") } else { bad("no") },
         ]);
     }
     println!("{t}");
@@ -145,7 +156,7 @@ fn set(args: SetArgs, json: bool) -> Result<()> {
     }
     config::save(&store)?;
     if !json {
-        println!("Perfil «{name}» guardado.");
+        println!("{} Perfil «{}» guardado.", "✓".green().bold(), name.bold());
     }
     Ok(())
 }
@@ -158,7 +169,7 @@ fn use_profile(name: String, json: bool) -> Result<()> {
     store.active = Some(name.clone());
     config::save(&store)?;
     if !json {
-        println!("Perfil activo: «{name}».");
+        println!("{} Perfil activo: «{}».", "✓".green().bold(), name.bold());
     }
     Ok(())
 }
@@ -167,7 +178,11 @@ pub fn whoami(json: bool) -> Result<()> {
     let active = config::resolve(None)?;
     match active {
         Some(p) if json => println!("{}", serde_json::to_string_pretty(&p)?),
-        Some(p) => println!("{} {}", p.name, p.email.unwrap_or_default()),
+        Some(p) => println!(
+            "{} {}",
+            p.name.bold().cyan(),
+            p.email.unwrap_or_default().dimmed()
+        ),
         None => bail!("no hay perfil activo"),
     }
     Ok(())

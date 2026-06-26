@@ -2,9 +2,11 @@ use crate::api::sale::{self, SearchParams};
 use crate::api::session::Session;
 use crate::api::stations;
 use crate::cli::SearchArgs;
-use crate::commands::table;
+use crate::commands::{bad, bold, good, table};
 use crate::config;
 use anyhow::Result;
+use colored::Colorize;
+use comfy_table::Cell;
 
 pub fn run(args: SearchArgs, json: bool, profile: Option<&str>) -> Result<()> {
     let catalog = stations::load(false)?;
@@ -17,8 +19,12 @@ pub fn run(args: SearchArgs, json: bool, profile: Option<&str>) -> Result<()> {
 
     if !json {
         eprintln!(
-            "Buscando {} → {} el {date}...",
-            origin.name, destination.name
+            "{} {} {} {} {}...",
+            "Buscando".cyan(),
+            origin.name.bold(),
+            "→".cyan(),
+            destination.name.bold(),
+            format!("el {date}").cyan()
         );
     }
 
@@ -55,13 +61,15 @@ pub fn run(args: SearchArgs, json: bool, profile: Option<&str>) -> Result<()> {
     let mut t = table(&["Tipo", "Tren", "Salida", "Llegada", "Duración", "Precio", "Plaza"]);
     for tr in &trains {
         t.add_row(vec![
-            tr.train_type.clone(),
-            tr.train_number.clone(),
-            tr.departure.clone(),
-            tr.arrival.clone(),
-            tr.duration.clone(),
-            tr.price.map(|p| format!("{p:.2}€")).unwrap_or_else(|| "—".into()),
-            if tr.available { "sí".into() } else { "no".into() },
+            Cell::new(&tr.train_type),
+            Cell::new(&tr.train_number),
+            Cell::new(&tr.departure),
+            Cell::new(&tr.arrival),
+            Cell::new(&tr.duration),
+            tr.price
+                .map(|p| bold(format!("{p:.2}€")))
+                .unwrap_or_else(|| Cell::new("—")),
+            if tr.available { good("sí") } else { bad("no") },
         ]);
     }
     println!("{t}");

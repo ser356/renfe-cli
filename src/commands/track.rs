@@ -1,7 +1,8 @@
 use crate::api::telemetry;
 use crate::cli::TrackArgs;
-use crate::commands::table;
+use crate::commands::{bad, good, table, warn_cell};
 use anyhow::Result;
+use comfy_table::Cell;
 
 pub fn run(args: TrackArgs, json: bool) -> Result<()> {
     let mut fleet = telemetry::fleet()?;
@@ -24,12 +25,18 @@ pub fn run(args: TrackArgs, json: bool) -> Result<()> {
     }
     let mut t = table(&["Tren", "Servicio", "Retraso", "Anterior", "Siguiente"]);
     for p in &fleet {
+        let delay = format!("{} min", p.delay_min);
+        let delay_cell = match p.delay_min {
+            d if d <= 0 => good(delay),
+            d if d <= 5 => warn_cell(delay),
+            _ => bad(delay),
+        };
         t.add_row(vec![
-            p.train_number.clone(),
-            p.service.clone(),
-            format!("{} min", p.delay_min),
-            p.last_station.clone().unwrap_or_else(|| "—".into()),
-            p.next_station.clone().unwrap_or_else(|| "—".into()),
+            Cell::new(&p.train_number),
+            Cell::new(&p.service),
+            delay_cell,
+            Cell::new(p.last_station.clone().unwrap_or_else(|| "—".into())),
+            Cell::new(p.next_station.clone().unwrap_or_else(|| "—".into())),
         ]);
     }
     println!("{t}");

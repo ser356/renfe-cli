@@ -5,6 +5,7 @@ use crate::cli::BuyArgs;
 use crate::commands::table;
 use crate::config;
 use anyhow::{bail, Context, Result};
+use colored::Colorize;
 use std::fs;
 use std::io::{self, Write};
 use std::process::Command;
@@ -29,9 +30,11 @@ pub fn run(args: BuyArgs, json: bool, profile_name: Option<&str>) -> Result<()> 
 
     if !json {
         eprintln!(
-            "Compra: {} → {} el {} (tren id={}{}). Titular: {} {} {}.",
-            origin.name,
-            destination.name,
+            "{} {} {} {} el {} (tren id={}{}). Titular: {} {} {}.",
+            "Compra:".bold().cyan(),
+            origin.name.bold(),
+            "→".cyan(),
+            destination.name.bold(),
             args.date,
             args.train,
             args.fare
@@ -43,7 +46,10 @@ pub fn run(args: BuyArgs, json: bool, profile_name: Option<&str>) -> Result<()> 
             profile.apellido2.as_deref().unwrap_or(""),
         );
         if !args.yes {
-            confirm("Continuar y armar el carrito (no se cobra)? [s/N] ")?;
+            confirm(&format!(
+                "{} [s/N] ",
+                "Continuar y armar el carrito (no se cobra)?".yellow()
+            ))?;
         }
     }
 
@@ -110,7 +116,7 @@ pub fn run(args: BuyArgs, json: bool, profile_name: Option<&str>) -> Result<()> 
     t.add_row(vec!["Cookies".into(), cookies_path.clone()]);
     println!("{t}");
     println!();
-    println!("Carrito armado. Para pagar:");
+    println!("{}", "Carrito armado. Para pagar:".green().bold());
     println!("  1. Abre la URL anterior en el navegador.");
     println!(
         "  2. Si la sesión no se ata, importa cookies con: \
@@ -119,7 +125,10 @@ pub fn run(args: BuyArgs, json: bool, profile_name: Option<&str>) -> Result<()> 
     );
     println!("  El pago (Redsys + 3DS) NO se automatiza, se hace en el navegador.");
     eprintln!();
-    eprintln!("Aviso: {cookies_path} contiene cookies de sesión sensibles. Bórralo al terminar.");
+    eprintln!(
+        "{} {cookies_path} contiene cookies de sesión sensibles. Bórralo al terminar.",
+        "Aviso:".yellow().bold()
+    );
     Ok(())
 }
 
@@ -173,7 +182,7 @@ fn open_browser_with_session(cookies_path: &str, checkout_url: &str) -> Result<(
     fs::write(&script_path, OPEN_CHECKOUT_SCRIPT)
         .with_context(|| format!("escribiendo script temporal en {}", script_path.display()))?;
 
-    eprintln!("Abriendo navegador con la sesión del carrito...");
+    eprintln!("{}", "Abriendo navegador con la sesión del carrito...".cyan());
     let status = Command::new("python3")
         .arg(&script_path)
         .arg("--cookies")
