@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^cd /Users/sergiogarciaseco/Downloads/renfe-cli-2\nsource \"\\$HOME/\\.cargo/env\" 2>/dev/null\ncargo test --quiet 2>&1 \\| tail -30$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}
