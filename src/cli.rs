@@ -102,6 +102,12 @@ pub struct BuyArgs {
     /// Saltar la confirmación interactiva.
     #[arg(long, short = 'y')]
     pub yes: bool,
+    /// Tras armar el carrito, abre un navegador real (Chrome/Edge, visible)
+    /// con la sesión ya inyectada, en la pantalla de pago. Requiere
+    /// `python3`; instala `selenium` solo si falta. El pago en sí lo
+    /// completa la persona; esto solo evita pegar la cookie a mano.
+    #[arg(long)]
+    pub open: bool,
 }
 
 #[derive(Args, Debug)]

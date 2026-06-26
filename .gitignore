@@ -2,3 +2,7 @@
 /.renfe
 Cargo.lock.bak
 /capturas
+*.cookies.txt
+out.txt
+__pycache__/
+*.pyc

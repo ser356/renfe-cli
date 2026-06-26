@@ -7,6 +7,12 @@ use crate::config;
 use anyhow::{bail, Context, Result};
 use std::fs;
 use std::io::{self, Write};
+use std::process::Command;
+
+/// Fuente del helper que abre un navegador real con la sesión inyectada.
+/// Embebida en el binario para que `renfe buy --open` funcione sin depender
+/// de tener el repo a mano; ver `tools/open_checkout.py` para el original.
+const OPEN_CHECKOUT_SCRIPT: &str = include_str!("../../tools/open_checkout.py");
 
 pub fn run(args: BuyArgs, json: bool, profile_name: Option<&str>) -> Result<()> {
     let profile = config::resolve(profile_name)?.ok_or_else(|| {
@@ -59,6 +65,10 @@ pub fn run(args: BuyArgs, json: bool, profile_name: Option<&str>) -> Result<()> 
         .unwrap_or_else(|| format!("./renfe-buy-{}.cookies.txt", outcome.id_compra));
     write_cookies_netscape(&cookies_path, &outcome.cookies_header)
         .with_context(|| format!("escribiendo {cookies_path}"))?;
+
+    if args.open {
+        open_browser_with_session(&cookies_path, &outcome.checkout_url)?;
+    }
 
     if json {
         // No volcamos el header Cookie en JSON: contiene la sesión completa.
@@ -151,6 +161,36 @@ fn write_cookies_netscape(path: &str, cookie_header: &str) -> Result<()> {
         ));
     }
     fs::write(path, out)?;
+    Ok(())
+}
+
+/// Lanza el helper de Python embebido para abrir un navegador real (visible,
+/// no headless) ya logueado en `checkout_url`. El navegador queda abierto
+/// para que la persona pague a mano; este proceso solo espera a que el
+/// script termine de inyectar las cookies y navegar.
+fn open_browser_with_session(cookies_path: &str, checkout_url: &str) -> Result<()> {
+    let script_path = std::env::temp_dir().join("renfe-open-checkout.py");
+    fs::write(&script_path, OPEN_CHECKOUT_SCRIPT)
+        .with_context(|| format!("escribiendo script temporal en {}", script_path.display()))?;
+
+    eprintln!("Abriendo navegador con la sesión del carrito...");
+    let status = Command::new("python3")
+        .arg(&script_path)
+        .arg("--cookies")
+        .arg(cookies_path)
+        .arg("--url")
+        .arg(checkout_url)
+        .status()
+        .context("no se pudo ejecutar `python3`. ¿Está instalado y en el PATH?")?;
+    if !status.success() {
+        bail!(
+            "el navegador no se abrió (python3 salió con código {}). \
+             El script instala `selenium` solo si falta; revisa el mensaje \
+             anterior. Como alternativa, importa manualmente {cookies_path} \
+             en el navegador.",
+            status.code().unwrap_or(-1)
+        );
+    }
     Ok(())
 }
 
