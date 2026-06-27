@@ -13,25 +13,22 @@ Binario: `renfe`. Estado local: `~/.renfe/`.
 
 ## Reglas de diseño (NO negociables)
 
-1. **El pago queda fuera de alcance.** No implementes checkout de pago: el flujo
-   termina en Redsys + 3D Secure, que no se automatiza (fragilidad, términos de
-   servicio, PCI-DSS). El CLI llega hasta dejar la compra armada y delega el
-   pago al navegador. No cambies esto sin que el usuario lo pida explícitamente.
-2. **No inventes endpoints.** La parte de venta (`src/api/sale.rs`) solo se
+
+1. **No inventes endpoints.** La parte de venta (`src/api/sale.rs`) solo se
    rellena con tráfico real capturado por el usuario (ver `CAPTURA.md` y
    `tools/capture_renfe.py`). Si no hay captura disponible para algo, deja un
    `bail!` con un TODO claro; nunca cablees una URL o un cuerpo supuestos.
-3. **Parseo defensivo siempre.** El JSON de Renfe cambia sin avisar. Prueba
+2. **Parseo defensivo siempre.** El JSON de Renfe cambia sin avisar. Prueba
    varios nombres de clave candidatos (como en `telemetry.rs` y `stations.rs`),
    nunca asumas uno solo. Mapea sobre `serde_json::Value` y construye los structs
    de `models.rs` con tolerancia a campos ausentes.
-4. **Salida dual.** Todo comando respeta `--json` (estructurado, sin adornos,
+3. **Salida dual.** Todo comando respeta `--json` (estructurado, sin adornos,
    para scripting) y, en su ausencia, una tabla legible (`comfy-table`). Los
    mensajes humanos van a `stderr`; los datos a `stdout`.
-5. **Datos sensibles nunca al repo.** `~/.renfe/` y `./capturas/` contienen
+4. **Datos sensibles nunca al repo.** `~/.renfe/` y `./capturas/` contienen
    tokens y cookies en claro. Ya están en `.gitignore`. No los vuelques en logs
    ni en tests.
-6. **Idioma y estilo.** Comentarios, mensajes de error y de usuario en español,
+5. **Idioma y estilo.** Comentarios, mensajes de error y de usuario en español,
    registro impersonal y preciso. Sin emojis en la salida del CLI.
 
 ## Estado por módulo

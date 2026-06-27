@@ -1,11 +1,12 @@
-use crate::api::sale::{self, BuyParams};
+use crate::api::sale::{self, BuyParams, SearchParams};
 use crate::api::session::Session;
 use crate::api::stations;
 use crate::cli::BuyArgs;
-use crate::commands::table;
+use crate::commands::{bold, good, bad, table};
 use crate::config;
 use anyhow::{bail, Context, Result};
 use colored::Colorize;
+use comfy_table::Cell;
 use std::fs;
 use std::io::{self, Write};
 use std::process::Command;
@@ -27,6 +28,86 @@ pub fn run(args: BuyArgs, json: bool, profile_name: Option<&str>) -> Result<()> 
     let catalog = stations::load(false)?;
     let origin = stations::resolve(&args.origin, &catalog)?;
     let destination = stations::resolve(&args.destination, &catalog)?;
+    let date = args
+        .date
+        .clone()
+        .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
+
+    // ── Modo interactivo: buscar y elegir tren ──────────────────────────────
+    let (train_id, fare_code_owned) = if let Some(id) = args.train {
+        (id, args.fare.clone())
+    } else {
+        if json {
+            bail!("--train es obligatorio en modo --json");
+        }
+        eprintln!(
+            "{} {} {} {} {}...",
+            "Buscando".cyan(),
+            origin.name.bold(),
+            "→".cyan(),
+            destination.name.bold(),
+            format!("el {date}").cyan()
+        );
+        let session_search = Session::new(config::resolve(profile_name)?)?;
+        let sp = SearchParams {
+            origin: &origin,
+            destination: &destination,
+            date: &date,
+            return_date: None,
+            adults: 1,
+        };
+        let mut trains = sale::search(&session_search, &sp)?;
+        trains.retain(|t| t.available);
+        if trains.is_empty() {
+            bail!("no hay trenes disponibles para esa ruta y fecha");
+        }
+
+        // Mostrar tabla numerada
+        let mut t = table(&["#", "Tipo", "Tren", "Salida", "Llegada", "Duración", "Precio"]);
+        for (i, tr) in trains.iter().enumerate() {
+            t.add_row(vec![
+                Cell::new(i + 1),
+                Cell::new(&tr.train_type),
+                Cell::new(&tr.train_number),
+                Cell::new(&tr.departure),
+                Cell::new(&tr.arrival),
+                Cell::new(&tr.duration),
+                tr.price
+                    .map(|p| bold(format!("{p:.2}€")))
+                    .unwrap_or_else(|| Cell::new("—")),
+            ]);
+        }
+        eprintln!("{t}");
+
+        let idx = ask_index("Elige tren", trains.len())?;
+        let chosen_train = &trains[idx];
+
+        // Elegir tarifa
+        let chosen_fare_name = if args.fare.is_none() && chosen_train.fares.len() > 1 {
+            let mut ft = table(&["#", "Tarifa", "Clase", "Precio", "Disponible"]);
+            for (i, f) in chosen_train.fares.iter().enumerate() {
+                ft.add_row(vec![
+                    Cell::new(i + 1),
+                    Cell::new(&f.name),
+                    Cell::new(&f.class),
+                    bold(format!("{:.2}€", f.price)),
+                    if f.available { good("sí") } else { bad("no") },
+                ]);
+            }
+            eprintln!("{ft}");
+            let fi = ask_index("Elige tarifa", chosen_train.fares.len())?;
+            Some(chosen_train.fares[fi].name.clone())
+        } else {
+            args.fare.clone()
+        };
+
+        let tid = chosen_train
+            .train_number
+            .parse::<i64>()
+            .with_context(|| format!("número de tren «{}» no es numérico", chosen_train.train_number))?;
+        (tid, chosen_fare_name)
+    };
+    let fare_code_ref = fare_code_owned.as_deref();
 
     if !json {
         eprintln!(
@@ -35,10 +116,9 @@ pub fn run(args: BuyArgs, json: bool, profile_name: Option<&str>) -> Result<()> 
             origin.name.bold(),
             "→".cyan(),
             destination.name.bold(),
-            args.date,
-            args.train,
-            args.fare
-                .as_deref()
+            date,
+            train_id,
+            fare_code_ref
                 .map(|f| format!(", tarifa {f}"))
                 .unwrap_or_default(),
             profile.nombre.as_deref().unwrap_or("?"),
@@ -57,9 +137,9 @@ pub fn run(args: BuyArgs, json: bool, profile_name: Option<&str>) -> Result<()> 
     let params = BuyParams {
         origin: &origin,
         destination: &destination,
-        date: &args.date,
-        train_id: args.train,
-        fare_code: args.fare.as_deref(),
+        date: &date,
+        train_id,
+        fare_code: fare_code_ref,
         viajero: &profile,
     };
 
@@ -73,7 +153,13 @@ pub fn run(args: BuyArgs, json: bool, profile_name: Option<&str>) -> Result<()> 
         .with_context(|| format!("escribiendo {cookies_path}"))?;
 
     if args.open {
-        open_browser_with_session(&cookies_path, &outcome.checkout_url)?;
+        open_browser_with_session(
+            &cookies_path,
+            &outcome.checkout_url,
+            args.bizum,
+            profile.email.as_deref(),
+            profile.telefono.as_deref(),
+        )?;
     }
 
     if json {
@@ -177,18 +263,42 @@ fn write_cookies_netscape(path: &str, cookie_header: &str) -> Result<()> {
 /// no headless) ya logueado en `checkout_url`. El navegador queda abierto
 /// para que la persona pague a mano; este proceso solo espera a que el
 /// script termine de inyectar las cookies y navegar.
-fn open_browser_with_session(cookies_path: &str, checkout_url: &str) -> Result<()> {
+///
+/// Con `auto_pay=true`, el script rellena automáticamente el formulario de
+/// Redsys (tarjeta y CVV) y espera la aprobación 3DS en el móvil. El CVV
+/// lo pide el propio script en la terminal vía `getpass`; nunca pasa por
+/// argumentos ni por disco.
+fn open_browser_with_session(
+    cookies_path: &str,
+    checkout_url: &str,
+    bizum: bool,
+    buyer_email: Option<&str>,
+    buyer_phone: Option<&str>,
+) -> Result<()> {
     let script_path = std::env::temp_dir().join("renfe-open-checkout.py");
     fs::write(&script_path, OPEN_CHECKOUT_SCRIPT)
         .with_context(|| format!("escribiendo script temporal en {}", script_path.display()))?;
 
     eprintln!("{}", "Abriendo navegador con la sesión del carrito...".cyan());
-    let status = Command::new("python3")
-        .arg(&script_path)
+
+    let mut cmd = Command::new("python3");
+    cmd.arg(&script_path)
         .arg("--cookies")
         .arg(cookies_path)
         .arg("--url")
-        .arg(checkout_url)
+        .arg(checkout_url);
+
+    if bizum {
+        cmd.arg("--bizum");
+    }
+    if let Some(email) = buyer_email {
+        cmd.env("RENFE_BUYER_EMAIL", email);
+    }
+    if let Some(phone) = buyer_phone {
+        cmd.env("RENFE_BUYER_PHONE", phone);
+    }
+
+    let status = cmd
         .status()
         .context("no se pudo ejecutar `python3`. ¿Está instalado y en el PATH?")?;
     if !status.success() {
@@ -213,5 +323,20 @@ fn confirm(prompt: &str) -> Result<()> {
         Ok(())
     } else {
         bail!("cancelado por el usuario")
+    }
+}
+
+/// Pide al usuario un número del 1 al `max` y devuelve el índice 0-based.
+fn ask_index(label: &str, max: usize) -> Result<usize> {
+    loop {
+        eprint!("{} [1-{}]: ", label.yellow().bold(), max);
+        io::stderr().flush().ok();
+        let mut line = String::new();
+        io::stdin().read_line(&mut line)?;
+        let s = line.trim();
+        match s.parse::<usize>() {
+            Ok(n) if n >= 1 && n <= max => return Ok(n - 1),
+            _ => eprintln!("  {}", format!("Introduce un número entre 1 y {max}.").red()),
+        }
     }
 }

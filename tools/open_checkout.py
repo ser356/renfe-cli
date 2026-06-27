@@ -148,12 +148,14 @@ RENFE_USER_AGENT = (
 )
 
 
-def make_driver(browser: str):
+def make_driver(browser: str, detach: bool = True):
     """Levanta el navegador real (visible) que pidas, o Edge y si falla Chrome.
 
     Con `detach=True` el navegador sigue abierto aunque este proceso (y el
     servicio del driver) termine; sin esto, Chromium lo cierra en cuanto el
-    driver se desconecta, justo cuando el script acaba de dejarlo listo."""
+    driver se desconecta, justo cuando el script acaba de dejarlo listo.
+    En modo auto-pay usamos detach=False para mantener el control hasta que
+    la compra se confirme."""
     from selenium import webdriver
     from selenium.common.exceptions import WebDriverException
     from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -161,13 +163,15 @@ def make_driver(browser: str):
 
     def edge():
         opts = EdgeOptions()
-        opts.add_experimental_option("detach", True)
+        if detach:
+            opts.add_experimental_option("detach", True)
         opts.add_argument(f"--user-agent={RENFE_USER_AGENT}")
         return webdriver.Edge(options=opts)
 
     def chrome():
         opts = ChromeOptions()
-        opts.add_experimental_option("detach", True)
+        if detach:
+            opts.add_experimental_option("detach", True)
         opts.add_argument(f"--user-agent={RENFE_USER_AGENT}")
         return webdriver.Chrome(options=opts)
 
@@ -186,24 +190,146 @@ def make_driver(browser: str):
     )
 
 
-def open_checkout(cookies: list[dict], checkout_url: str, browser: str) -> None:
-    driver = make_driver(browser)
+def open_checkout(cookies: list[dict], checkout_url: str, browser: str, bizum: bool = True) -> None:
+    driver = make_driver(browser, detach=not bizum)
     try:
-        # Aterrizamos en la propia checkout_url (sin cookies, va a fallar con
-        # el aviso de sesión caducada: es esperado) solo para que el
-        # navegador tenga el dominio correcto y poder añadir las cookies. No
-        # visitamos la home antes: eso le hace al servidor asignar una
-        # sesión nueva en una página aparte que solo añade ruido.
-        driver.get(checkout_url)
+        # Primer aterrizaje en el dominio para poder fijar las cookies.
+        # Usamos la home, NO el checkout_url, para evitar exponer el ?c=<id>
+        # a Renfe sin una sesión válida — hacerlo invalida el carrito (RV51).
+        home = "https://venta.renfe.com/vol/homeCustomers.do"
+        driver.get(home)
         for cookie in cookies:
-            driver.add_cookie(cookie)
+            try:
+                driver.add_cookie(cookie)
+            except Exception:
+                pass  # cookies con atributos no soportados; ignorar
         driver.get(checkout_url)
     except Exception:
         driver.quit()
         raise
+
+    if bizum:
+        try:
+            bizum_flow(driver)
+        except Exception:
+            driver.quit()
+            raise
+        return
+
     print(f"Navegador abierto en {checkout_url}. Completa el pago ahí; este script no lo toca.")
-    # No se llama a driver.quit(): queremos que el navegador siga abierto
-    # para que la persona pague, aunque el script termine.
+    # No se llama a driver.quit(): queremos que el navegador siga abierto.
+
+
+def _fill_buyer_fields(driver, wait_for) -> None:
+    """Rellena email y teléfono del comprador vía JS y descarta el banner de cookies."""
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support import expected_conditions as EC
+
+    # Descartar banner OneTrust si aparece.
+    try:
+        wait_for(driver, 6).until(
+            EC.element_to_be_clickable((By.ID, "onetrust-accept-btn-handler"))
+        ).click()
+        import time; time.sleep(0.5)
+    except Exception:
+        pass
+
+    def set_field(fid: str, value: str) -> None:
+        driver.execute_script(
+            "var el=document.getElementById(arguments[0]);"
+            "if(el){el.value=arguments[1];"
+            "el.dispatchEvent(new Event('input',{bubbles:true}));"
+            "el.dispatchEvent(new Event('change',{bubbles:true}));}",
+            fid, value,
+        )
+
+    buyer_email = os.environ.get("RENFE_BUYER_EMAIL", "")
+    buyer_phone = os.environ.get("RENFE_BUYER_PHONE", "")
+    if buyer_email:
+        set_field("inputEmail", buyer_email)
+    if buyer_phone:
+        set_field("telefonoComprador", buyer_phone)
+
+    # Marcar "He leído y acepto las condiciones" — sin esto butonPagar
+    # permanece disabled independientemente del método de pago elegido.
+    # Usamos click() en lugar de .checked=true porque Renfe escucha 'click',
+    # no el evento 'change'.
+    driver.execute_script(
+        "var cb=document.getElementById('aceptarCondiciones');"
+        "if(cb&&!cb.checked){cb.scrollIntoView();cb.click();}"
+    )
+
+
+def bizum_flow(driver) -> None:
+    """Selecciona Bizum, rellena datos del comprador y envía el formulario.
+
+    Flujo:
+      1. formasDePagoEnlaces.do → seleccionar radio Bizum + rellenar
+         email/teléfono + click butonPagar
+      2. El navegador aterriza en la página de confirmación de Bizum.
+         El usuario aprueba desde su móvil; el script solo espera
+         el retorno a venta.renfe.com.
+    """
+    import time
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
+    def wait_for(driver, timeout=30):
+        return WebDriverWait(driver, timeout)
+
+    # ── 1. Preparar el formulario de formasDePagoEnlaces.do ─────────────────
+    print("  [1/2] Seleccionando Bizum...", file=sys.stderr, flush=True)
+    try:
+        # Esperar a que el formulario cargue.
+        wait_for(driver).until(
+            EC.presence_of_element_located((By.ID, "formBean"))
+        )
+
+        # Rellenar datos del comprador y descartar banner.
+        _fill_buyer_fields(driver, wait_for)
+        time.sleep(0.3)
+
+        # Seleccionar radio Bizum vía JS.
+        driver.execute_script(
+            "var r=document.getElementById('datosPago_cdgoFormaPago_bizum');"
+            "if(r&&!r.checked){r.click();"
+            "r.dispatchEvent(new Event('change',{bubbles:true}));}"
+        )
+        time.sleep(0.5)
+
+        # Esperar a que butonPagar se habilite y hacer clic.
+        wait_for(driver, timeout=15).until(
+            lambda d: not d.find_element(By.ID, "butonPagar").get_attribute("disabled")
+        )
+        driver.execute_script("document.getElementById('butonPagar').click();")
+    except Exception as e:
+        raise SystemExit(
+            f"No se pudo seleccionar Bizum en la página de pago.\n"
+            f"¿La sesión sigue activa? Error: {e}"
+        )
+
+    # ── 2. Esperar a que el usuario apruebe en su móvil ──────────────────────
+    print(
+        "  [2/2] Formulario enviado. Aprueba el pago en tu app de Bizum.",
+        file=sys.stderr, flush=True,
+    )
+    # Esperamos que la URL vuelva a venta.renfe.com con la confirmación.
+    # El usuario tiene hasta 5 minutos para aprobar.
+    try:
+        WebDriverWait(driver, 300).until(
+            lambda d: (
+                "venta.renfe.com" in d.current_url
+                and any(k in d.current_url for k in ("respuestaRedSys", "confirmacion", "ok"))
+            )
+        )
+        print("\nCompra confirmada. Revisa tu email.", file=sys.stderr, flush=True)
+    except Exception:
+        print(
+            "\nTiempo de espera agotado. Comprueba el navegador y tu app de Bizum.",
+            file=sys.stderr, flush=True,
+        )
+    # Dejar el navegador abierto para que el usuario vea la confirmación.
 
 
 def main() -> None:
@@ -217,6 +343,12 @@ def main() -> None:
     ap.add_argument("--cookies", help="cookies.txt de `renfe buy` (si no usas buy_json)")
     ap.add_argument("--url", help="checkout_url de `renfe buy` (si no usas buy_json)")
     ap.add_argument("--browser", choices=["auto", "edge", "chrome"], default="auto")
+    ap.add_argument(
+        "--no-bizum", dest="bizum", action="store_false",
+        help="No seleccionar Bizum automáticamente; dejar el navegador abierto "
+             "para completar el pago a mano.",
+    )
+    ap.set_defaults(bizum=True)
     args = ap.parse_args()
 
     if args.buy_json:
@@ -230,7 +362,7 @@ def main() -> None:
         ap.error("pasa el JSON de `renfe buy --json` o bien --cookies y --url")
 
     cookies = parse_netscape_cookies(cookies_path)
-    open_checkout(cookies, checkout_url, args.browser)
+    open_checkout(cookies, checkout_url, args.browser, bizum=args.bizum)
 
 
 if __name__ == "__main__":

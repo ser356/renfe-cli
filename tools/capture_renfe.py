@@ -43,8 +43,9 @@ from mitmproxy import http, ctx
 OUT_DIR = Path("capturas")
 
 # Hosts cuyo tráfico nos interesa. Cualquier host que contenga "renfe" entra,
-# salvo los de la lista de ruido de abajo.
+# salvo los de la lista de ruido de abajo. Añadimos Redsys para cubrir el pago.
 RENFE_HINT = "renfe"
+REDSYS_HINT = "redsys"  # sis.redsys.es / sis-t.redsys.es
 
 # Ruido a ignorar aunque el host contenga "renfe" o venga del mismo origen.
 IGNORE_HOSTS = (
@@ -65,6 +66,12 @@ INTEREST_KEYS = (
     "llegada", "ave", "avlo", "trayecto", "listaTren", "disponib",
 )
 
+# Palabras en la URL/path que indican el flujo de pago Redsys.
+PAYMENT_PATH_KEYS = (
+    "formasDePago", "redsys", "pago", "payment", "checkout",
+    "sis/rest", "inicioPeticion", "operaciones",
+)
+
 # Cabeceras de petición que merece la pena conservar (el resto es ruido).
 KEEP_REQ_HEADERS = (
     "content-type", "accept", "referer", "origin", "x-requested-with",
@@ -83,13 +90,22 @@ def load(loader):
 
 def _is_target(flow: http.HTTPFlow) -> bool:
     host = flow.request.pretty_host.lower()
-    if RENFE_HINT not in host:
-        return False
-    if any(bad in host for bad in IGNORE_HOSTS):
+    is_renfe = RENFE_HINT in host and not any(bad in host for bad in IGNORE_HOSTS)
+    is_redsys = REDSYS_HINT in host
+    if not (is_renfe or is_redsys):
         return False
     if IGNORE_EXT.search(flow.request.path):
         return False
     return True
+
+
+def _is_payment_flow(flow: http.HTTPFlow) -> bool:
+    """True si el flujo parece parte del paso de pago (Redsys o formasDePago)."""
+    host = flow.request.pretty_host.lower()
+    url = flow.request.url
+    if REDSYS_HINT in host:
+        return True
+    return any(k.lower() in url.lower() for k in PAYMENT_PATH_KEYS)
 
 
 def _pretty(body: bytes):
@@ -168,11 +184,13 @@ def response(flow: http.HTTPFlow):
 
     req_body_text, req_is_json = _pretty(flow.request.content or b"")
     resp_body_text, resp_is_json = _pretty(flow.response.content or b"")
-    interesting = _looks_interesting(resp_body_text, resp_is_json)
+    is_payment = _is_payment_flow(flow)
+    interesting = _looks_interesting(resp_body_text, resp_is_json) or is_payment
 
     record = {
         "n": _counter,
         "interesting": interesting,
+        "payment_flow": is_payment,
         "method": flow.request.method,
         "url": flow.request.url,
         "status": flow.response.status_code,
@@ -204,9 +222,10 @@ def response(flow: http.HTTPFlow):
         (OUT_DIR / f"{stem}.reqwest.rs").write_text(
             _rust_snippet(flow, req_body_text, req_is_json), encoding="utf-8"
         )
+        label = "PAGO/REDSYS" if is_payment else "POSIBLE ENDPOINT DE VENTA"
         ctx.log.alert(
-            f"[renfe] ★ {n} POSIBLE ENDPOINT DE VENTA  "
-            f"{flow.request.method} {flow.request.path.split('?')[0]}  "
+            f"[renfe] ★ {n} {label}  "
+            f"{flow.request.method} {flow.request.pretty_host}{flow.request.path.split('?')[0]}  "
             f"→ {stem}.json + .reqwest.rs"
         )
     else:

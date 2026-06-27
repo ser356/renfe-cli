@@ -86,12 +86,13 @@ pub struct BuyArgs {
     /// Destino: código de estación o texto.
     #[arg(short = 'd', long)]
     pub destination: String,
-    /// Fecha de ida (YYYY-MM-DD).
+    /// Fecha de ida (YYYY-MM-DD). Por defecto, hoy.
     #[arg(long)]
-    pub date: String,
-    /// `id` del tren a comprar (columna "Tren" en `renfe search`).
+    pub date: Option<String>,
+    /// Número de tren a comprar (columna "Tren" en `renfe search`).
+    /// Si se omite, se buscan los trenes disponibles y se pregunta cuál elegir.
     #[arg(long)]
-    pub train: i64,
+    pub train: Option<i64>,
     /// Código de tarifa exacto (p. ej. VR010). Si se omite, la primera disponible.
     #[arg(long)]
     pub fare: Option<String>,
@@ -104,10 +105,16 @@ pub struct BuyArgs {
     pub yes: bool,
     /// Tras armar el carrito, abre un navegador real (Chrome/Edge, visible)
     /// con la sesión ya inyectada, en la pantalla de pago. Requiere
-    /// `python3`; instala `selenium` solo si falta. El pago en sí lo
-    /// completa la persona; esto solo evita pegar la cookie a mano.
-    #[arg(long)]
+    /// `python3`; instala `selenium` solo si falta.
+    /// Por defecto activado; usa `--no-open` para desactivar.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
     pub open: bool,
+    /// Con `--open`: selecciona Bizum como método de pago, rellena los
+    /// datos del comprador (email + teléfono del perfil) y envía el
+    /// formulario automáticamente. Por defecto activado junto con `--open`.
+    /// Usa `--no-bizum` para desactivar y completar el pago a mano.
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set, num_args = 0..=1, default_missing_value = "true")]
+    pub bizum: bool,
 }
 
 #[derive(Args, Debug)]

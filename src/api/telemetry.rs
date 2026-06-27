@@ -5,6 +5,9 @@ use std::time::Duration;
 
 /// Endpoint público sin autenticación que alimenta el visor oficial de Renfe.
 /// Solo cubre largo recorrido. El parámetro `v` es un timestamp anti-caché.
+///
+/// NOTA: el dominio original `infraestructurasferroviarias.renfe.com` fue
+/// desmantelado. Este endpoint necesita una nueva captura para actualizarse.
 const FLEET_URL: &str = "https://infraestructurasferroviarias.renfe.com/visorld/flotaLD.json";
 
 /// Descarga el estado de toda la flota activa de largo recorrido.
@@ -19,14 +22,24 @@ pub fn fleet() -> Result<Vec<TrainPosition>> {
         .user_agent(USER_AGENT)
         .timeout(Duration::from_secs(15))
         .build()?;
-    let body: serde_json::Value = client
+    let resp = client
         .get(&url)
         .send()
-        .context("consultando telemetría de flota")?
-        .json()
-        .context("parseando respuesta de telemetría")?;
+        .map_err(|e| {
+            if e.is_connect() || e.is_timeout() {
+                anyhow::anyhow!(
+                    "el endpoint de telemetría no responde.\n\
+                     El dominio infraestructurasferroviarias.renfe.com fue desmantelado \
+                     por Renfe y este comando necesita una nueva captura para actualizarse.\n\
+                     Error interno: {e}"
+                )
+            } else {
+                anyhow::anyhow!("consultando telemetría de flota: {e}")
+            }
+        })?;
 
     // La carga útil suele ser un array en la raíz o bajo una clave contenedora.
+    let body: serde_json::Value = resp.json().context("parseando respuesta de telemetría")?;
     let arr = body
         .as_array()
         .cloned()
